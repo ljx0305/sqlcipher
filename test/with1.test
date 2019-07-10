@@ -849,4 +849,246 @@ do_execsql_test 14.1 {
   WITH x AS (SELECT * FROM t) SELECT 0 EXCEPT SELECT 0 ORDER BY 1 COLLATE binary;
 } {}
 
+# 2015-05-27:  Do not allow rowid usage within a CTE
+#
+do_catchsql_test 15.1 {
+  WITH RECURSIVE
+    d(x) AS (VALUES(1) UNION ALL SELECT rowid+1 FROM d WHERE rowid<10)
+  SELECT x FROM d;
+} {1 {no such column: rowid}}
+
+# 2015-07-05:  Do not allow aggregate recursive queries
+#
+do_catchsql_test 16.1 {
+  WITH RECURSIVE
+    i(x) AS (VALUES(1) UNION SELECT count(*) FROM i)
+  SELECT * FROM i;
+} {1 {recursive aggregate queries not supported}}
+
+# Or window-function recursive queries. Ticket e8275b41.
+#
+ifcapable windowfunc {
+  do_catchsql_test 16.2 {
+    WITH RECURSIVE
+      i(x) AS (VALUES(1) UNION SELECT count(*) OVER () FROM i)
+      SELECT * FROM i;
+  } {1 {cannot use window functions in recursive queries}}
+  do_catchsql_test 16.3 {
+    WITH RECURSIVE
+      t(id, parent) AS (VALUES(1,2)),
+      q(id, parent, rn) AS (
+          VALUES(1,2,3)
+          UNION ALL
+          SELECT t.*, ROW_NUMBER() OVER (ORDER BY t.id) AS rn
+          FROM q JOIN t ON t.parent = q.id
+          )
+        SELECT * FROM q;
+  } {1 {cannot use window functions in recursive queries}}
+}
+
+#-------------------------------------------------------------------------
+do_execsql_test 17.1 {
+  WITH x(a) AS (
+    WITH y(b) AS (SELECT 10)
+    SELECT 9 UNION ALL SELECT * FROM y
+  )
+  SELECT * FROM x
+} {9 10}
+
+do_execsql_test 17.2 {
+  WITH x AS (
+    WITH y(b) AS (SELECT 10)
+    SELECT * FROM y UNION ALL SELECT * FROM y
+  )
+  SELECT * FROM x
+} {10 10}
+
+do_test 17.2 {
+  db eval {
+    WITH x AS (
+        WITH y(b) AS (SELECT 10)
+        SELECT * FROM y UNION ALL SELECT * FROM y
+    )
+    SELECT * FROM x
+  } A {
+    # no op
+  }
+  set A(*)
+} {b}
+
+do_catchsql_test 17.3 {
+  WITH i AS (
+    WITH j AS (SELECT 5)
+    SELECT 5 FROM i UNION SELECT 8 FROM i
+  )
+  SELECT * FROM i;
+} {1 {circular reference: i}}
+
+do_catchsql_test 17.4 {
+  WITH i AS (
+    WITH j AS (SELECT 5)
+    SELECT 5 FROM t1 UNION SELECT 8 FROM t11
+  )
+  SELECT * FROM i;
+} {1 {no such table: t11}}
+
+do_execsql_test 17.5 {
+  WITH 
+  x1 AS (SELECT 10),
+  x2 AS (SELECT * FROM x1),
+  x3 AS (
+    WITH x1 AS (SELECT 11)
+    SELECT * FROM x2 UNION ALL SELECT * FROM x2
+  )
+  SELECT * FROM x3;
+} {10 10}
+
+do_execsql_test 17.6 {
+  WITH 
+  x1 AS (SELECT 10),
+  x2 AS (SELECT * FROM x1),
+  x3 AS (
+    WITH x1 AS (SELECT 11)
+    SELECT * FROM x2 UNION ALL SELECT * FROM x1
+  )
+  SELECT * FROM x3;
+} {10 11}
+
+do_execsql_test 17.7 {
+  WITH 
+  x1 AS (SELECT 10),
+  x2 AS (SELECT * FROM x1),
+  x3 AS (
+    WITH 
+      x1 AS ( SELECT 11 ),
+      x4 AS ( SELECT * FROM x2 )
+    SELECT * FROM x4 UNION ALL SELECT * FROM x1
+  )
+  SELECT * FROM x3;
+} {10 11}
+
+do_execsql_test 17.8 {
+  WITH 
+  x1 AS (SELECT 10),
+  x2 AS (SELECT * FROM x1),
+  x3 AS (
+    WITH 
+      x1 AS ( SELECT 11 ),
+      x4 AS ( SELECT * FROM x2 )
+    SELECT * FROM x4 UNION ALL SELECT * FROM x1
+  )
+  SELECT * FROM x3;
+} {10 11}
+
+do_execsql_test 17.9 {
+  WITH 
+  x1 AS (SELECT 10),
+  x2 AS (SELECT 11),
+  x3 AS (
+    SELECT * FROM x1 UNION ALL SELECT * FROM x2
+  ),
+  x4 AS (
+    WITH 
+    x1 AS (SELECT 12),
+    x2 AS (SELECT 13)
+    SELECT * FROM x3
+  )
+  SELECT * FROM x4;
+} {10 11}
+
+# Added to test a fix to a faulty assert() discovered by libFuzzer.
+#
+do_execsql_test 18.1 {
+  WITH xyz(x) AS (VALUES(NULL) UNION SELECT round(1<x) FROM xyz ORDER BY 1)
+  SELECT quote(x) FROM xyz;
+} {NULL}
+do_execsql_test 18.2 {
+  WITH xyz(x) AS (
+    SELECT printf('%d', 5) * NULL
+    UNION SELECT round(1<1+x) 
+    FROM xyz ORDER BY 1
+  )
+  SELECT 1 FROM xyz;
+} 1
+
+# EXPLAIN QUERY PLAN on a self-join of a CTE
+#
+do_execsql_test 19.1a {
+  DROP TABLE IF EXISTS t1;
+  CREATE TABLE t1(x);
+}
+do_eqp_test 19.1b {
+  WITH
+    x1(a) AS (values(100))
+  INSERT INTO t1(x)
+    SELECT * FROM (WITH x2(y) AS (SELECT * FROM x1) SELECT y+a FROM x1, x2);
+  SELECT * FROM t1;
+} {
+  QUERY PLAN
+  |--MATERIALIZE xxxxxx
+  |  `--SCAN CONSTANT ROW
+  |--SCAN SUBQUERY xxxxxx
+  `--SCAN SUBQUERY xxxxxx
+}
+
+# 2017-10-28.
+# See check-in https://sqlite.org/src/info/0926df095faf72c2
+# Tried to optimize co-routine processing by changing a Copy opcode
+# into SCopy.  But OSSFuzz found two (similar) cases where that optimization
+# does not work.
+#
+do_execsql_test 20.1 {
+  WITH c(i)AS(VALUES(9)UNION SELECT~i FROM c)SELECT max(5)>i fROM c;
+} {0}
+do_execsql_test 20.2 {
+  WITH c(i)AS(VALUES(5)UNIoN SELECT 0)SELECT min(1)-i fROM c;
+} {1}
+
+# 2018-12-26
+# Two different CTE tables with the same name appear in within a single FROM
+# clause due to the query-flattener optimization.  make sure this does not cause
+# problems.  This problem was discovered by Matt Denton.
+#
+do_execsql_test 21.1 {
+   WITH RECURSIVE t21(a,b) AS (
+    WITH t21(x) AS (VALUES(1))
+    SELECT x, x FROM t21 ORDER BY 1
+  )
+  SELECT * FROM t21 AS tA, t21 AS tB
+} {1 1 1 1}
+do_execsql_test 21.1b {
+   /* This variant from chromium bug 922312 on 2019-01-16 */
+   WITH RECURSIVE t21(a,b) AS (
+    WITH t21(x) AS (VALUES(1))
+    SELECT x, x FROM t21 ORDER BY 1 LIMIT 5
+  )
+  SELECT * FROM t21 AS tA, t21 AS tB
+} {1 1 1 1}
+do_execsql_test 21.2 {
+  SELECT printf('',
+     EXISTS (WITH RECURSIVE Table0 AS (WITH Table0 AS (SELECT DISTINCT 1)
+                                       SELECT *, * FROM Table0 ORDER BY 1 DESC)
+             SELECT * FROM Table0  NATURAL JOIN  Table0));
+} {{}}
+
+# 2019-01-17
+# Make sure crazy nexted CTE joins terminate with an error quickly.
+#
+do_catchsql_test 22.1 {
+  WITH RECURSIVE c AS (
+     WITH RECURSIVE c AS (
+        WITH RECURSIVE c AS (
+           WITH RECURSIVE c AS (
+               WITH  c AS (VALUES(0))
+               SELECT 1 FROM c LEFT JOIN c ON ltrim(1)
+           )
+           SELECT 1 FROM c,c,c,c,c,c,c,c,c
+        )
+        SELECT  2 FROM c,c,c,c,c,c,c,c,c
+     )
+     SELECT 3 FROM c,c,c,c,c,c,c,c,c
+  )
+  SELECT 4 FROM c,c,c,c,c,c,c,c,c;
+} {1 {too many FROM clause terms, max: 200}}
+
 finish_test

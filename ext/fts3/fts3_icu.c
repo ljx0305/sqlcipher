@@ -60,7 +60,7 @@ static int icuCreate(
   if( argc>0 ){
     n = strlen(argv[0])+1;
   }
-  p = (IcuTokenizer *)sqlite3_malloc(sizeof(IcuTokenizer)+n);
+  p = (IcuTokenizer *)sqlite3_malloc64(sizeof(IcuTokenizer)+n);
   if( !p ){
     return SQLITE_NOMEM;
   }
@@ -117,7 +117,7 @@ static int icuOpen(
     nInput = strlen(zInput);
   }
   nChar = nInput+1;
-  pCsr = (IcuCursor *)sqlite3_malloc(
+  pCsr = (IcuCursor *)sqlite3_malloc64(
       sizeof(IcuCursor) +                /* IcuCursor */
       ((nChar+3)&~3) * sizeof(UChar) +   /* IcuCursor.aChar[] */
       (nChar+1) * sizeof(int)            /* IcuCursor.aOffset[] */
@@ -240,12 +240,13 @@ static int icuNext(
 ** The set of routines that implement the simple tokenizer
 */
 static const sqlite3_tokenizer_module icuTokenizerModule = {
-  0,                           /* iVersion */
-  icuCreate,                   /* xCreate  */
-  icuDestroy,                  /* xCreate  */
-  icuOpen,                     /* xOpen    */
-  icuClose,                    /* xClose   */
-  icuNext,                     /* xNext    */
+  0,                           /* iVersion    */
+  icuCreate,                   /* xCreate     */
+  icuDestroy,                  /* xCreate     */
+  icuOpen,                     /* xOpen       */
+  icuClose,                    /* xClose      */
+  icuNext,                     /* xNext       */
+  0,                           /* xLanguageid */
 };
 
 /*

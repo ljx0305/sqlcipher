@@ -12,8 +12,8 @@
 ** This is the header file for the generic hash-table implementation
 ** used in SQLite.
 */
-#ifndef _SQLITE_HASH_H_
-#define _SQLITE_HASH_H_
+#ifndef SQLITE_HASH_H
+#define SQLITE_HASH_H
 
 /* Forward declarations of structures. */
 typedef struct Hash Hash;
@@ -45,7 +45,7 @@ struct Hash {
   unsigned int count;       /* Number of entries in this table */
   HashElem *first;          /* The first element of the array */
   struct _ht {              /* the hash table */
-    int count;                 /* Number of entries with this hash */
+    unsigned int count;        /* Number of entries with this hash */
     HashElem *chain;           /* Pointer to first entry with this hash */
   } *ht;
 };
@@ -93,4 +93,4 @@ void sqlite3HashClear(Hash*);
 */
 /* #define sqliteHashCount(H)  ((H)->count) // NOT USED */
 
-#endif /* _SQLITE_HASH_H_ */
+#endif /* SQLITE_HASH_H */

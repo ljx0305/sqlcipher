@@ -160,7 +160,7 @@ int sqlite3OsInit(void);
 /* 
 ** Functions for accessing sqlite3_file methods 
 */
-int sqlite3OsClose(sqlite3_file*);
+void sqlite3OsClose(sqlite3_file*);
 int sqlite3OsRead(sqlite3_file*, void*, int amt, i64 offset);
 int sqlite3OsWrite(sqlite3_file*, const void*, int amt, i64 offset);
 int sqlite3OsTruncate(sqlite3_file*, i64 size);
@@ -174,10 +174,12 @@ void sqlite3OsFileControlHint(sqlite3_file*,int,void*);
 #define SQLITE_FCNTL_DB_UNCHANGED 0xca093fa0
 int sqlite3OsSectorSize(sqlite3_file *id);
 int sqlite3OsDeviceCharacteristics(sqlite3_file *id);
+#ifndef SQLITE_OMIT_WAL
 int sqlite3OsShmMap(sqlite3_file *,int,int,int,void volatile **);
 int sqlite3OsShmLock(sqlite3_file *id, int, int, int);
 void sqlite3OsShmBarrier(sqlite3_file *id);
 int sqlite3OsShmUnmap(sqlite3_file *id, int);
+#endif /* SQLITE_OMIT_WAL */
 int sqlite3OsFetch(sqlite3_file *id, i64, int, void **);
 int sqlite3OsUnfetch(sqlite3_file *, i64, void *);
 
@@ -197,6 +199,7 @@ void sqlite3OsDlClose(sqlite3_vfs *, void *);
 #endif /* SQLITE_OMIT_LOAD_EXTENSION */
 int sqlite3OsRandomness(sqlite3_vfs *, int, char *);
 int sqlite3OsSleep(sqlite3_vfs *, int);
+int sqlite3OsGetLastError(sqlite3_vfs*);
 int sqlite3OsCurrentTimeInt64(sqlite3_vfs *, sqlite3_int64*);
 
 /*
@@ -204,6 +207,6 @@ int sqlite3OsCurrentTimeInt64(sqlite3_vfs *, sqlite3_int64*);
 ** sqlite3_malloc() to obtain space for the file-handle structure.
 */
 int sqlite3OsOpenMalloc(sqlite3_vfs *, const char *, sqlite3_file **, int,int*);
-int sqlite3OsCloseFree(sqlite3_file *);
+void sqlite3OsCloseFree(sqlite3_file *);
 
 #endif /* _SQLITE_OS_H_ */

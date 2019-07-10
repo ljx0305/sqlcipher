@@ -238,7 +238,7 @@ do_execsql_test 5.0 {
 
 do_eqp_test 5.1 {
   SELECT * FROM t45 WHERE b=? AND a>?
-} {/*USING INDEX i45 (b=? AND a>?)*/}
+} {USING INDEX i45 (b=? AND a>?)}
 
 do_execsql_test 5.2 {
   SELECT * FROM t45 WHERE b='two' AND a>4
@@ -257,11 +257,11 @@ do_execsql_test 5.4 {
 }
 
 set queries {
-  1    2    "c = 5 AND a = 1"          {/*i46 (c=? AND a=?)*/}
-  2    6    "c = 4 AND a < 3"          {/*i46 (c=? AND a<?)*/}
-  3    4    "c = 2 AND a >= 3"         {/*i46 (c=? AND a>?)*/}
-  4    1    "c = 2 AND a = 1 AND b<10" {/*i46 (c=? AND a=? AND b<?)*/}
-  5    1    "c = 0 AND a = 0 AND b>5"  {/*i46 (c=? AND a=? AND b>?)*/}
+  1    2    "c = 5 AND a = 1"          {i46 (c=? AND a=?)}
+  2    6    "c = 4 AND a < 3"          {i46 (c=? AND a<?)}
+  3    4    "c = 2 AND a >= 3"         {i46 (c=? AND a>?)}
+  4    1    "c = 2 AND a = 1 AND b<10" {i46 (c=? AND a=? AND b<?)}
+  5    1    "c = 0 AND a = 0 AND b>5"  {i46 (c=? AND a=? AND b>?)}
 }
 
 foreach {tn cnt where eqp} $queries {
@@ -276,6 +276,120 @@ foreach {tn cnt where eqp} $queries {
   do_execsql_test 5.7.$tn.1 "SELECT count(*) FROM t46 WHERE $where" $cnt
   do_eqp_test 5.7.$tn.2  "SELECT count(*) FROM t46 WHERE $where" $eqp
 }
+
+#-------------------------------------------------------------------------
+# Check that redundant UNIQUE constraints do not cause a problem.
+#
+do_execsql_test 6.0 {
+  CREATE TABLE t47(a, b UNIQUE PRIMARY KEY) WITHOUT ROWID;
+  CREATE INDEX i47 ON t47(a);
+  INSERT INTO t47 VALUES(1, 2);
+  INSERT INTO t47 VALUES(2, 4);
+  INSERT INTO t47 VALUES(3, 6);
+  INSERT INTO t47 VALUES(4, 8);
+
+  VACUUM;
+  PRAGMA integrity_check;
+  SELECT name FROM sqlite_master WHERE tbl_name = 't47';
+} {ok t47 i47}
+
+do_execsql_test 6.1 {
+  CREATE TABLE t48(
+    a UNIQUE UNIQUE, 
+    b UNIQUE, 
+    PRIMARY KEY(a), 
+    UNIQUE(a)
+  ) WITHOUT ROWID;
+  INSERT INTO t48 VALUES('a', 'b'), ('c', 'd'), ('e', 'f');
+  VACUUM;
+  PRAGMA integrity_check;
+  SELECT name FROM sqlite_master WHERE tbl_name = 't48';
+} {
+  ok  t48   sqlite_autoindex_t48_2
+}
+
+# 2015-05-28: CHECK constraints can refer to the rowid in a
+# rowid table, but not in a WITHOUT ROWID table.
+#
+do_execsql_test 7.1 {
+  CREATE TABLE t70a(
+     a INT CHECK( rowid!=33 ),
+     b TEXT PRIMARY KEY
+  );
+  INSERT INTO t70a(a,b) VALUES(99,'hello');
+} {}
+do_catchsql_test 7.2 {
+  INSERT INTO t70a(rowid,a,b) VALUES(33,99,'xyzzy');
+} {1 {CHECK constraint failed: t70a}}
+do_catchsql_test 7.3 {
+  CREATE TABLE t70b(
+     a INT CHECK( rowid!=33 ),
+     b TEXT PRIMARY KEY
+  ) WITHOUT ROWID;
+} {1 {no such column: rowid}}
+
+# 2017-07-30: OSSFuzz discovered that an extra entry was being
+# added in the sqlite_master table for an "INTEGER PRIMARY KEY UNIQUE"
+# WITHOUT ROWID table.  Make sure this has now been fixed.
+#
+db close
+sqlite3 db :memory:
+do_execsql_test 8.1 {
+  CREATE TABLE t1(x INTEGER PRIMARY KEY UNIQUE, b) WITHOUT ROWID;
+  CREATE INDEX t1x ON t1(x);
+  INSERT INTO t1(x,b) VALUES('funny','buffalo');
+  SELECT type, name, '|' FROM sqlite_master;
+} {table t1 | index t1x |}
+
+# 2018-04-05: OSSFuzz found that the following was accessing an 
+# unintialized memory cell. Which was not actually causing a 
+# malfunction, but does cause an assert() to fail.
+#
+do_execsql_test 9.0 {
+  CREATE TABLE t2(b, c, PRIMARY KEY(b,c)) WITHOUT ROWID;
+  CREATE UNIQUE INDEX t2b ON t2(b);
+  UPDATE t2 SET b=1 WHERE b='';
+}
+
+do_execsql_test 10.1 {
+  DELETE FROM t2 WHERE b=1
+}
+
+#-------------------------------------------------------------------------
+# UNIQUE constraint violation in an UPDATE with a multi-column PK.
+#
+reset_db
+do_execsql_test 10.0 {
+  CREATE TABLE t1(a, b, c UNIQUE, PRIMARY KEY(a, b)) WITHOUT ROWID;
+  INSERT INTO t1 VALUES('a', 'a', 1);
+  INSERT INTO t1 VALUES('a', 'b', 2);
+  INSERT INTO t1 VALUES('b', 'a', 3);
+  INSERT INTO t1 VALUES('b', 'b', 4);
+}
+
+do_catchsql_test 10.1 {
+  UPDATE t1 SET c=1 WHERE (a, b) = ('a', 'a');
+} {0 {}}
+do_catchsql_test 10.2 {
+  UPDATE t1 SET c=1 WHERE (a, b) = ('a', 'b');
+} {1 {UNIQUE constraint failed: t1.c}}
+do_catchsql_test 10.3 {
+  UPDATE t1 SET c=1 WHERE (a, b) = ('b', 'a');
+} {1 {UNIQUE constraint failed: t1.c}}
+do_catchsql_test 10.4 {
+  UPDATE t1 SET c=1 WHERE (a, b) = ('b', 'b');
+} {1 {UNIQUE constraint failed: t1.c}}
+do_catchsql_test 10.5 {
+  UPDATE t1 SET c=1 WHERE (a, b) = ('c', 'c');
+} {0 {}}
+
+do_execsql_test 10.6 {
+  CREATE TRIGGER t1_tr BEFORE UPDATE ON t1 BEGIN
+    DELETE FROM t1 WHERE a = new.a;
+  END;
+  UPDATE t1 SET c = c+1 WHERE a = 'a';
+  SELECT * FROM t1;
+} {b a 3  b b 4}
 
   
 finish_test

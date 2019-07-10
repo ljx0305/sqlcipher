@@ -13,7 +13,7 @@
 set testdir [file dirname $argv0]
 source $testdir/tester.tcl
 set testprefix e_uri
-
+do_not_use_codec
 db close
 
 proc parse_uri {uri} {
@@ -26,7 +26,9 @@ proc parse_uri {uri} {
   set DB [sqlite3_open_v2 $uri {
     SQLITE_OPEN_READWRITE SQLITE_OPEN_CREATE SQLITE_OPEN_WAL
   } tvfs]
+  set fileName [sqlite3_db_filename $DB main]
   sqlite3_close $DB
+  forcedelete $fileName
   tvfs delete
   tvfs2 delete
 
@@ -48,8 +50,8 @@ proc open_uri_error {uri} {
 # and the filename argument begins with "file:", then the filename is
 # interpreted as a URI.
 #
-# EVIDENCE-OF: R-24124-56960 URI filename interpretation is enabled if
-# the SQLITE_OPEN_URI flag is set in the fourth argument to
+# EVIDENCE-OF: R-27632-24205 URI filename interpretation is enabled if
+# the SQLITE_OPEN_URI flag is set in the third argument to
 # sqlite3_open_v2(), or if it has been enabled globally using the
 # SQLITE_CONFIG_URI option with the sqlite3_config() method or by the
 # SQLITE_USE_URI compile-time option.

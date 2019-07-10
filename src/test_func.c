@@ -13,14 +13,17 @@
 ** implements new SQL functions used by the test scripts.
 */
 #include "sqlite3.h"
-#include "tcl.h"
+#if defined(INCLUDE_SQLITE_TCL_H)
+#  include "sqlite_tcl.h"
+#else
+#  include "tcl.h"
+#endif
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
 #include "sqliteInt.h"
 #include "vdbeInt.h"
-
 
 /*
 ** Allocate nByte bytes of space using sqlite3_malloc(). If the
@@ -152,7 +155,7 @@ static void test_destructor_count(
 ** arguments. It returns the text value returned by the sqlite3_errmsg16()
 ** API function.
 */
-#ifndef SQLITE_OMIT_BUILTIN_TEST
+#ifndef SQLITE_UNTESTABLE
 void sqlite3BeginBenignMalloc(void);
 void sqlite3EndBenignMalloc(void);
 #else
@@ -166,9 +169,7 @@ static void test_agg_errmsg16_final(sqlite3_context *ctx){
   const void *z;
   sqlite3 * db = sqlite3_context_db_handle(ctx);
   sqlite3_aggregate_context(ctx, 2048);
-  sqlite3BeginBenignMalloc();
   z = sqlite3_errmsg16(db);
-  sqlite3EndBenignMalloc();
   sqlite3_result_text16(ctx, z, -1, SQLITE_TRANSIENT);
 #endif
 }
@@ -462,7 +463,7 @@ static void real2hex(
 }
 
 /*
-** tclcmd: test_extract(record, field)
+**     test_extract(record, field)
 **
 ** This function implements an SQL user-function that accepts a blob
 ** containing a formatted database record as the first argument. The
@@ -509,7 +510,7 @@ static void test_extract(
 }
 
 /*
-** tclcmd: test_decode(record)
+**      test_decode(record)
 **
 ** This function implements an SQL user-function that accepts a blob
 ** containing a formatted database record as its only argument. It returns
@@ -601,6 +602,8 @@ static void test_decode(
 }
 
 /*
+**       test_zeroblob(N)
+**
 ** The implementation of scalar SQL function "test_zeroblob()". This is
 ** similar to the built-in zeroblob() function, except that it does not
 ** check that the integer parameter is within range before passing it
@@ -615,7 +618,54 @@ static void test_zeroblob(
   sqlite3_result_zeroblob(context, nZero);
 }
 
-static int registerTestFunctions(sqlite3 *db){
+/*         test_getsubtype(V)
+**
+** Return the subtype for value V.
+*/
+static void test_getsubtype(
+  sqlite3_context *context,
+  int argc,
+  sqlite3_value **argv
+){
+  sqlite3_result_int(context, (int)sqlite3_value_subtype(argv[0]));
+}
+
+/*         test_frombind(A,B,C,...)
+**
+** Return an integer bitmask that has a bit set for every argument
+** (up to the first 63 arguments) that originates from a bind a parameter.
+*/
+static void test_frombind(
+  sqlite3_context *context,
+  int argc,
+  sqlite3_value **argv
+){
+  sqlite3_uint64 m = 0;
+  int i;
+  for(i=0; i<argc && i<63; i++){
+    if( sqlite3_value_frombind(argv[i]) ) m |= ((sqlite3_uint64)1)<<i;
+  }
+  sqlite3_result_int64(context, (sqlite3_int64)m);
+}
+
+/*         test_setsubtype(V, T)
+**
+** Return the value V with its subtype changed to T
+*/
+static void test_setsubtype(
+  sqlite3_context *context,
+  int argc,
+  sqlite3_value **argv
+){
+  sqlite3_result_value(context, argv[0]);
+  sqlite3_result_subtype(context, (unsigned int)sqlite3_value_int(argv[1]));
+}
+
+static int registerTestFunctions(
+  sqlite3 *db,
+  char **pzErrMsg,
+  const sqlite3_api_routines *pThunk
+){
   static const struct {
      char *zName;
      signed char nArg;
@@ -641,6 +691,9 @@ static int registerTestFunctions(sqlite3 *db){
     { "test_decode",           1, SQLITE_UTF8, test_decode},
     { "test_extract",          2, SQLITE_UTF8, test_extract},
     { "test_zeroblob",  1, SQLITE_UTF8|SQLITE_DETERMINISTIC, test_zeroblob},
+    { "test_getsubtype",       1, SQLITE_UTF8, test_getsubtype},
+    { "test_setsubtype",       2, SQLITE_UTF8, test_setsubtype},
+    { "test_frombind",        -1, SQLITE_UTF8, test_frombind},
   };
   int i;
 
@@ -662,16 +715,16 @@ static int registerTestFunctions(sqlite3 *db){
 ** the standard set of test functions to be loaded into each new
 ** database connection.
 */
-static int autoinstall_test_funcs(
+static int SQLITE_TCLAPI autoinstall_test_funcs(
   void * clientData,
   Tcl_Interp *interp,
   int objc,
   Tcl_Obj *CONST objv[]
 ){
-  extern int Md5_Register(sqlite3*);
-  int rc = sqlite3_auto_extension((void*)registerTestFunctions);
+  extern int Md5_Register(sqlite3 *, char **, const sqlite3_api_routines *);
+  int rc = sqlite3_auto_extension((void(*)(void))registerTestFunctions);
   if( rc==SQLITE_OK ){
-    rc = sqlite3_auto_extension((void*)Md5_Register);
+    rc = sqlite3_auto_extension((void(*)(void))Md5_Register);
   }
   Tcl_SetObjResult(interp, Tcl_NewIntObj(rc));
   return TCL_OK;
@@ -690,7 +743,7 @@ static void tFinal(sqlite3_context *a){}
 ** Make various calls to sqlite3_create_function that do not have valid
 ** parameters.  Verify that the error condition is detected and reported.
 */
-static int abuse_create_function(
+static int SQLITE_TCLAPI abuse_create_function(
   void * clientData,
   Tcl_Interp *interp,
   int objc,
@@ -756,6 +809,124 @@ abuse_err:
   return TCL_ERROR;
 }
 
+
+/*
+** SQLite user defined function to use with matchinfo() to calculate the
+** relevancy of an FTS match. The value returned is the relevancy score
+** (a real value greater than or equal to zero). A larger value indicates 
+** a more relevant document.
+**
+** The overall relevancy returned is the sum of the relevancies of each 
+** column value in the FTS table. The relevancy of a column value is the
+** sum of the following for each reportable phrase in the FTS query:
+**
+**   (<hit count> / <global hit count>) * <column weight>
+**
+** where <hit count> is the number of instances of the phrase in the
+** column value of the current row and <global hit count> is the number
+** of instances of the phrase in the same column of all rows in the FTS
+** table. The <column weight> is a weighting factor assigned to each
+** column by the caller (see below).
+**
+** The first argument to this function must be the return value of the FTS 
+** matchinfo() function. Following this must be one argument for each column 
+** of the FTS table containing a numeric weight factor for the corresponding 
+** column. Example:
+**
+**     CREATE VIRTUAL TABLE documents USING fts3(title, content)
+**
+** The following query returns the docids of documents that match the full-text
+** query <query> sorted from most to least relevant. When calculating
+** relevance, query term instances in the 'title' column are given twice the
+** weighting of those in the 'content' column.
+**
+**     SELECT docid FROM documents 
+**     WHERE documents MATCH <query> 
+**     ORDER BY rank(matchinfo(documents), 1.0, 0.5) DESC
+*/
+static void rankfunc(sqlite3_context *pCtx, int nVal, sqlite3_value **apVal){
+  int *aMatchinfo;                /* Return value of matchinfo() */
+  int nMatchinfo;                 /* Number of elements in aMatchinfo[] */
+  int nCol = 0;                   /* Number of columns in the table */
+  int nPhrase = 0;                /* Number of phrases in the query */
+  int iPhrase;                    /* Current phrase */
+  double score = 0.0;             /* Value to return */
+
+  assert( sizeof(int)==4 );
+
+  /* Check that the number of arguments passed to this function is correct.
+  ** If not, jump to wrong_number_args. Set aMatchinfo to point to the array
+  ** of unsigned integer values returned by FTS function matchinfo. Set
+  ** nPhrase to contain the number of reportable phrases in the users full-text
+  ** query, and nCol to the number of columns in the table. Then check that the
+  ** size of the matchinfo blob is as expected. Return an error if it is not.
+  */
+  if( nVal<1 ) goto wrong_number_args;
+  aMatchinfo = (int*)sqlite3_value_blob(apVal[0]);
+  nMatchinfo = sqlite3_value_bytes(apVal[0]) / sizeof(int);
+  if( nMatchinfo>=2 ){
+    nPhrase = aMatchinfo[0];
+    nCol = aMatchinfo[1];
+  }
+  if( nMatchinfo!=(2+3*nCol*nPhrase) ){
+    sqlite3_result_error(pCtx,
+        "invalid matchinfo blob passed to function rank()", -1);
+    return;
+  }
+  if( nVal!=(1+nCol) ) goto wrong_number_args;
+
+  /* Iterate through each phrase in the users query. */
+  for(iPhrase=0; iPhrase<nPhrase; iPhrase++){
+    int iCol;                     /* Current column */
+
+    /* Now iterate through each column in the users query. For each column,
+    ** increment the relevancy score by:
+    **
+    **   (<hit count> / <global hit count>) * <column weight>
+    **
+    ** aPhraseinfo[] points to the start of the data for phrase iPhrase. So
+    ** the hit count and global hit counts for each column are found in 
+    ** aPhraseinfo[iCol*3] and aPhraseinfo[iCol*3+1], respectively.
+    */
+    int *aPhraseinfo = &aMatchinfo[2 + iPhrase*nCol*3];
+    for(iCol=0; iCol<nCol; iCol++){
+      int nHitCount = aPhraseinfo[3*iCol];
+      int nGlobalHitCount = aPhraseinfo[3*iCol+1];
+      double weight = sqlite3_value_double(apVal[iCol+1]);
+      if( nHitCount>0 ){
+        score += ((double)nHitCount / (double)nGlobalHitCount) * weight;
+      }
+    }
+  }
+
+  sqlite3_result_double(pCtx, score);
+  return;
+
+  /* Jump here if the wrong number of arguments are passed to this function */
+wrong_number_args:
+  sqlite3_result_error(pCtx, "wrong number of arguments to function rank()", -1);
+}
+
+static int SQLITE_TCLAPI install_fts3_rank_function(
+  void * clientData,
+  Tcl_Interp *interp,
+  int objc,
+  Tcl_Obj *CONST objv[]
+){
+  extern int getDbPointer(Tcl_Interp*, const char*, sqlite3**);
+  sqlite3 *db;
+
+  if( objc!=2 ){
+    Tcl_WrongNumArgs(interp, 1, objv, "DB");
+    return TCL_ERROR;
+  }
+
+  if( getDbPointer(interp, Tcl_GetString(objv[1]), &db) ) return TCL_ERROR;
+  sqlite3_create_function(db, "rank", -1, SQLITE_UTF8, 0, rankfunc, 0, 0);
+  return TCL_OK;
+}
+
+
 /*
 ** Register commands with the TCL interpreter.
 */
@@ -766,15 +937,16 @@ int Sqlitetest_func_Init(Tcl_Interp *interp){
   } aObjCmd[] = {
      { "autoinstall_test_functions",    autoinstall_test_funcs },
      { "abuse_create_function",         abuse_create_function  },
+     { "install_fts3_rank_function",    install_fts3_rank_function  },
   };
   int i;
-  extern int Md5_Register(sqlite3*);
+  extern int Md5_Register(sqlite3 *, char **, const sqlite3_api_routines *);
 
   for(i=0; i<sizeof(aObjCmd)/sizeof(aObjCmd[0]); i++){
     Tcl_CreateObjCommand(interp, aObjCmd[i].zName, aObjCmd[i].xProc, 0, 0);
   }
   sqlite3_initialize();
-  sqlite3_auto_extension((void*)registerTestFunctions);
-  sqlite3_auto_extension((void*)Md5_Register);
+  sqlite3_auto_extension((void(*)(void))registerTestFunctions);
+  sqlite3_auto_extension((void(*)(void))Md5_Register);
   return TCL_OK;
 }

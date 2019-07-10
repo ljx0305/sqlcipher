@@ -619,16 +619,16 @@ static int amatchLoadOneRule(
     if( p->rDel==0 || p->rDel>rCost ) p->rDel = rCost;
   }else
   {
-    pRule = sqlite3_malloc( sizeof(*pRule) + nFrom + nTo );
+    pRule = sqlite3_malloc64( sizeof(*pRule) + nFrom + nTo );
     if( pRule==0 ){
       rc = SQLITE_NOMEM;
     }else{
       memset(pRule, 0, sizeof(*pRule));
       pRule->zFrom = &pRule->zTo[nTo+1];
-      pRule->nFrom = nFrom;
+      pRule->nFrom = (amatch_len)nFrom;
       memcpy(pRule->zFrom, zFrom, nFrom+1);
       memcpy(pRule->zTo, zTo, nTo+1);
-      pRule->nTo = nTo;
+      pRule->nTo = (amatch_len)nTo;
       pRule->rCost = rCost;
       pRule->iLang = (int)iLang;
     }
@@ -738,16 +738,16 @@ static int amatchLoadRules(
 **     `mno`   becomes   mno
 */
 static char *amatchDequote(const char *zIn){
-  int nIn;                        /* Size of input string, in bytes */
+  sqlite3_int64 nIn;              /* Size of input string, in bytes */
   char *zOut;                     /* Output (dequoted) string */
 
-  nIn = (int)strlen(zIn);
-  zOut = sqlite3_malloc(nIn+1);
+  nIn = strlen(zIn);
+  zOut = sqlite3_malloc64(nIn+1);
   if( zOut ){
     char q = zIn[0];              /* Quote character (if any ) */
 
     if( q!='[' && q!= '\'' && q!='"' && q!='`' ){
-      memcpy(zOut, zIn, nIn+1);
+      memcpy(zOut, zIn, (size_t)(nIn+1));
     }else{
       int iOut = 0;               /* Index of next byte to write to output */
       int iIn;                    /* Index of next byte to read from input */
@@ -816,10 +816,10 @@ static const char *amatchValueOfKey(const char *zKey, const char *zStr){
   int i;
   if( nStr<nKey+1 ) return 0;
   if( memcmp(zStr, zKey, nKey)!=0 ) return 0;
-  for(i=nKey; isspace(zStr[i]); i++){}
+  for(i=nKey; isspace((unsigned char)zStr[i]); i++){}
   if( zStr[i]!='=' ) return 0;
   i++;
-  while( isspace(zStr[i]) ){ i++; }
+  while( isspace((unsigned char)zStr[i]) ){ i++; }
   return zStr+i;
 }
 
@@ -1001,7 +1001,6 @@ static void amatchWriteCost(amatch_word *pWord){
 /* Circumvent compiler warnings about the use of strcpy() by supplying
 ** our own implementation.
 */
-#if defined(__OpenBSD__)
 static void amatchStrcpy(char *dest, const char *src){
   while( (*(dest++) = *(src++))!=0 ){}
 }
@@ -1009,11 +1008,6 @@ static void amatchStrcat(char *dest, const char *src){
   while( *dest ) dest++;
   amatchStrcpy(dest, src);
 }
-#else
-# define amatchStrcpy strcpy
-# define amatchStrcat strcat
-#endif
-
 
 /*
 ** Add a new amatch_word object to the queue.
@@ -1075,13 +1069,13 @@ static void amatchAddWord(
     }
     return;
   }
-  pWord = sqlite3_malloc( sizeof(*pWord) + nBase + nTail - 1 );
+  pWord = sqlite3_malloc64( sizeof(*pWord) + nBase + nTail - 1 );
   if( pWord==0 ) return;
   memset(pWord, 0, sizeof(*pWord));
   pWord->rCost = rCost;
   pWord->iSeq = pCur->nWord++;
   amatchWriteCost(pWord);
-  pWord->nMatch = nMatch;
+  pWord->nMatch = (short)nMatch;
   pWord->pNext = pCur->pAllWords;
   pCur->pAllWords = pWord;
   pWord->sCost.zKey = pWord->zCost;
@@ -1162,7 +1156,7 @@ static int amatchNext(sqlite3_vtab_cursor *cur){
 #endif
     nWord = (int)strlen(pWord->zWord+2);
     if( nWord+20>nBuf ){
-      nBuf = nWord+100;
+      nBuf = (char)(nWord+100);
       zBuf = sqlite3_realloc(zBuf, nBuf);
       if( zBuf==0 ) return SQLITE_NOMEM;
     }
@@ -1479,7 +1473,8 @@ static sqlite3_module amatchModule = {
   0,                      /* xRename */
   0,                      /* xSavepoint */
   0,                      /* xRelease */
-  0                       /* xRollbackTo */
+  0,                      /* xRollbackTo */
+  0                       /* xShadowName */
 };
 
 #endif /* SQLITE_OMIT_VIRTUALTABLE */

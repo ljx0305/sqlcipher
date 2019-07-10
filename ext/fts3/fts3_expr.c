@@ -122,8 +122,8 @@ static int fts3isspace(char c){
 ** zero the memory before returning a pointer to it. If unsuccessful, 
 ** return NULL.
 */
-static void *fts3MallocZero(int nByte){
-  void *pRet = sqlite3_malloc(nByte);
+static void *fts3MallocZero(sqlite3_int64 nByte){
+  void *pRet = sqlite3_malloc64(nByte);
   if( pRet ) memset(pRet, 0, nByte);
   return pRet;
 }
@@ -198,7 +198,7 @@ static int getNextToken(
   if( rc==SQLITE_OK ){
     const char *zToken;
     int nToken = 0, iStart = 0, iEnd = 0, iPosition = 0;
-    int nByte;                               /* total space to allocate */
+    sqlite3_int64 nByte;                    /* total space to allocate */
 
     rc = pModule->xNext(pCursor, &zToken, &nToken, &iStart, &iEnd, &iPosition);
     if( rc==SQLITE_OK ){
@@ -252,8 +252,8 @@ static int getNextToken(
 ** Enlarge a memory allocation.  If an out-of-memory allocation occurs,
 ** then free the old allocation.
 */
-static void *fts3ReallocOrFree(void *pOrig, int nNew){
-  void *pRet = sqlite3_realloc(pOrig, nNew);
+static void *fts3ReallocOrFree(void *pOrig, sqlite3_int64 nNew){
+  void *pRet = sqlite3_realloc64(pOrig, nNew);
   if( !pRet ){
     sqlite3_free(pOrig);
   }
@@ -497,7 +497,6 @@ static int getNextNode(
       int nConsumed = 0;
       pParse->nNest++;
       rc = fts3ExprParse(pParse, zInput+1, nInput-1, ppExpr, &nConsumed);
-      if( rc==SQLITE_OK && !*ppExpr ){ rc = SQLITE_DONE; }
       *pnConsumed = (int)(zInput - z) + 1 + nConsumed;
       return rc;
     }else if( *zInput==')' ){
@@ -793,125 +792,151 @@ static int fts3ExprBalance(Fts3Expr **pp, int nMaxDepth){
     rc = SQLITE_ERROR;
   }
 
-  if( rc==SQLITE_OK && (eType==FTSQUERY_AND || eType==FTSQUERY_OR) ){
-    Fts3Expr **apLeaf;
-    apLeaf = (Fts3Expr **)sqlite3_malloc(sizeof(Fts3Expr *) * nMaxDepth);
-    if( 0==apLeaf ){
-      rc = SQLITE_NOMEM;
-    }else{
-      memset(apLeaf, 0, sizeof(Fts3Expr *) * nMaxDepth);
-    }
-
-    if( rc==SQLITE_OK ){
-      int i;
-      Fts3Expr *p;
-
-      /* Set $p to point to the left-most leaf in the tree of eType nodes. */
-      for(p=pRoot; p->eType==eType; p=p->pLeft){
-        assert( p->pParent==0 || p->pParent->pLeft==p );
-        assert( p->pLeft && p->pRight );
-      }
-
-      /* This loop runs once for each leaf in the tree of eType nodes. */
-      while( 1 ){
-        int iLvl;
-        Fts3Expr *pParent = p->pParent;     /* Current parent of p */
-
-        assert( pParent==0 || pParent->pLeft==p );
-        p->pParent = 0;
-        if( pParent ){
-          pParent->pLeft = 0;
-        }else{
-          pRoot = 0;
-        }
-        rc = fts3ExprBalance(&p, nMaxDepth-1);
-        if( rc!=SQLITE_OK ) break;
-
-        for(iLvl=0; p && iLvl<nMaxDepth; iLvl++){
-          if( apLeaf[iLvl]==0 ){
-            apLeaf[iLvl] = p;
-            p = 0;
-          }else{
-            assert( pFree );
-            pFree->pLeft = apLeaf[iLvl];
-            pFree->pRight = p;
-            pFree->pLeft->pParent = pFree;
-            pFree->pRight->pParent = pFree;
-
-            p = pFree;
-            pFree = pFree->pParent;
-            p->pParent = 0;
-            apLeaf[iLvl] = 0;
-          }
-        }
-        if( p ){
-          sqlite3Fts3ExprFree(p);
-          rc = SQLITE_TOOBIG;
-          break;
-        }
-
-        /* If that was the last leaf node, break out of the loop */
-        if( pParent==0 ) break;
-
-        /* Set $p to point to the next leaf in the tree of eType nodes */
-        for(p=pParent->pRight; p->eType==eType; p=p->pLeft);
-
-        /* Remove pParent from the original tree. */
-        assert( pParent->pParent==0 || pParent->pParent->pLeft==pParent );
-        pParent->pRight->pParent = pParent->pParent;
-        if( pParent->pParent ){
-          pParent->pParent->pLeft = pParent->pRight;
-        }else{
-          assert( pParent==pRoot );
-          pRoot = pParent->pRight;
-        }
-
-        /* Link pParent into the free node list. It will be used as an
-        ** internal node of the new tree.  */
-        pParent->pParent = pFree;
-        pFree = pParent;
+  if( rc==SQLITE_OK ){
+    if( (eType==FTSQUERY_AND || eType==FTSQUERY_OR) ){
+      Fts3Expr **apLeaf;
+      apLeaf = (Fts3Expr **)sqlite3_malloc64(sizeof(Fts3Expr *) * nMaxDepth);
+      if( 0==apLeaf ){
+        rc = SQLITE_NOMEM;
+      }else{
+        memset(apLeaf, 0, sizeof(Fts3Expr *) * nMaxDepth);
       }
 
       if( rc==SQLITE_OK ){
-        p = 0;
-        for(i=0; i<nMaxDepth; i++){
-          if( apLeaf[i] ){
-            if( p==0 ){
-              p = apLeaf[i];
-              p->pParent = 0;
+        int i;
+        Fts3Expr *p;
+
+        /* Set $p to point to the left-most leaf in the tree of eType nodes. */
+        for(p=pRoot; p->eType==eType; p=p->pLeft){
+          assert( p->pParent==0 || p->pParent->pLeft==p );
+          assert( p->pLeft && p->pRight );
+        }
+
+        /* This loop runs once for each leaf in the tree of eType nodes. */
+        while( 1 ){
+          int iLvl;
+          Fts3Expr *pParent = p->pParent;     /* Current parent of p */
+
+          assert( pParent==0 || pParent->pLeft==p );
+          p->pParent = 0;
+          if( pParent ){
+            pParent->pLeft = 0;
+          }else{
+            pRoot = 0;
+          }
+          rc = fts3ExprBalance(&p, nMaxDepth-1);
+          if( rc!=SQLITE_OK ) break;
+
+          for(iLvl=0; p && iLvl<nMaxDepth; iLvl++){
+            if( apLeaf[iLvl]==0 ){
+              apLeaf[iLvl] = p;
+              p = 0;
             }else{
-              assert( pFree!=0 );
+              assert( pFree );
+              pFree->pLeft = apLeaf[iLvl];
               pFree->pRight = p;
-              pFree->pLeft = apLeaf[i];
               pFree->pLeft->pParent = pFree;
               pFree->pRight->pParent = pFree;
 
               p = pFree;
               pFree = pFree->pParent;
               p->pParent = 0;
+              apLeaf[iLvl] = 0;
             }
           }
+          if( p ){
+            sqlite3Fts3ExprFree(p);
+            rc = SQLITE_TOOBIG;
+            break;
+          }
+
+          /* If that was the last leaf node, break out of the loop */
+          if( pParent==0 ) break;
+
+          /* Set $p to point to the next leaf in the tree of eType nodes */
+          for(p=pParent->pRight; p->eType==eType; p=p->pLeft);
+
+          /* Remove pParent from the original tree. */
+          assert( pParent->pParent==0 || pParent->pParent->pLeft==pParent );
+          pParent->pRight->pParent = pParent->pParent;
+          if( pParent->pParent ){
+            pParent->pParent->pLeft = pParent->pRight;
+          }else{
+            assert( pParent==pRoot );
+            pRoot = pParent->pRight;
+          }
+
+          /* Link pParent into the free node list. It will be used as an
+          ** internal node of the new tree.  */
+          pParent->pParent = pFree;
+          pFree = pParent;
         }
-        pRoot = p;
-      }else{
-        /* An error occurred. Delete the contents of the apLeaf[] array 
-        ** and pFree list. Everything else is cleaned up by the call to
-        ** sqlite3Fts3ExprFree(pRoot) below.  */
-        Fts3Expr *pDel;
-        for(i=0; i<nMaxDepth; i++){
-          sqlite3Fts3ExprFree(apLeaf[i]);
+
+        if( rc==SQLITE_OK ){
+          p = 0;
+          for(i=0; i<nMaxDepth; i++){
+            if( apLeaf[i] ){
+              if( p==0 ){
+                p = apLeaf[i];
+                p->pParent = 0;
+              }else{
+                assert( pFree!=0 );
+                pFree->pRight = p;
+                pFree->pLeft = apLeaf[i];
+                pFree->pLeft->pParent = pFree;
+                pFree->pRight->pParent = pFree;
+
+                p = pFree;
+                pFree = pFree->pParent;
+                p->pParent = 0;
+              }
+            }
+          }
+          pRoot = p;
+        }else{
+          /* An error occurred. Delete the contents of the apLeaf[] array 
+          ** and pFree list. Everything else is cleaned up by the call to
+          ** sqlite3Fts3ExprFree(pRoot) below.  */
+          Fts3Expr *pDel;
+          for(i=0; i<nMaxDepth; i++){
+            sqlite3Fts3ExprFree(apLeaf[i]);
+          }
+          while( (pDel=pFree)!=0 ){
+            pFree = pDel->pParent;
+            sqlite3_free(pDel);
+          }
         }
-        while( (pDel=pFree)!=0 ){
-          pFree = pDel->pParent;
-          sqlite3_free(pDel);
-        }
+
+        assert( pFree==0 );
+        sqlite3_free( apLeaf );
+      }
+    }else if( eType==FTSQUERY_NOT ){
+      Fts3Expr *pLeft = pRoot->pLeft;
+      Fts3Expr *pRight = pRoot->pRight;
+
+      pRoot->pLeft = 0;
+      pRoot->pRight = 0;
+      pLeft->pParent = 0;
+      pRight->pParent = 0;
+
+      rc = fts3ExprBalance(&pLeft, nMaxDepth-1);
+      if( rc==SQLITE_OK ){
+        rc = fts3ExprBalance(&pRight, nMaxDepth-1);
       }
 
-      assert( pFree==0 );
-      sqlite3_free( apLeaf );
+      if( rc!=SQLITE_OK ){
+        sqlite3Fts3ExprFree(pRight);
+        sqlite3Fts3ExprFree(pLeft);
+      }else{
+        assert( pLeft && pRight );
+        pRoot->pLeft = pLeft;
+        pLeft->pParent = pRoot;
+        pRoot->pRight = pRight;
+        pRight->pParent = pRoot;
+      }
     }
   }
-
+  
   if( rc!=SQLITE_OK ){
     sqlite3Fts3ExprFree(pRoot);
     pRoot = 0;
@@ -1083,34 +1108,6 @@ void sqlite3Fts3ExprFree(Fts3Expr *pDel){
 #include <stdio.h>
 
 /*
-** Function to query the hash-table of tokenizers (see README.tokenizers).
-*/
-static int queryTestTokenizer(
-  sqlite3 *db, 
-  const char *zName,  
-  const sqlite3_tokenizer_module **pp
-){
-  int rc;
-  sqlite3_stmt *pStmt;
-  const char zSql[] = "SELECT fts3_tokenizer(?)";
-
-  *pp = 0;
-  rc = sqlite3_prepare_v2(db, zSql, -1, &pStmt, 0);
-  if( rc!=SQLITE_OK ){
-    return rc;
-  }
-
-  sqlite3_bind_text(pStmt, 1, zName, -1, SQLITE_STATIC);
-  if( SQLITE_ROW==sqlite3_step(pStmt) ){
-    if( sqlite3_column_type(pStmt, 0)==SQLITE_BLOB ){
-      memcpy((void *)pp, sqlite3_column_blob(pStmt, 0), sizeof(*pp));
-    }
-  }
-
-  return sqlite3_finalize(pStmt);
-}
-
-/*
 ** Return a pointer to a buffer containing a text representation of the
 ** expression passed as the first argument. The buffer is obtained from
 ** sqlite3_malloc(). It is the responsibility of the caller to use 
@@ -1177,12 +1174,12 @@ static char *exprToString(Fts3Expr *pExpr, char *zBuf){
 **
 **   SELECT fts3_exprtest('simple', 'Bill col2:Bloggs', 'col1', 'col2');
 */
-static void fts3ExprTest(
+static void fts3ExprTestCommon(
+  int bRebalance,
   sqlite3_context *context,
   int argc,
   sqlite3_value **argv
 ){
-  sqlite3_tokenizer_module const *pModule = 0;
   sqlite3_tokenizer *pTokenizer = 0;
   int rc;
   char **azCol = 0;
@@ -1192,7 +1189,9 @@ static void fts3ExprTest(
   int ii;
   Fts3Expr *pExpr;
   char *zBuf = 0;
-  sqlite3 *db = sqlite3_context_db_handle(context);
+  Fts3Hash *pHash = (Fts3Hash*)sqlite3_user_data(context);
+  const char *zTokenizer = 0;
+  char *zErr = 0;
 
   if( argc<3 ){
     sqlite3_result_error(context, 
@@ -1201,28 +1200,22 @@ static void fts3ExprTest(
     return;
   }
 
-  rc = queryTestTokenizer(db,
-                          (const char *)sqlite3_value_text(argv[0]), &pModule);
-  if( rc==SQLITE_NOMEM ){
-    sqlite3_result_error_nomem(context);
-    goto exprtest_out;
-  }else if( !pModule ){
-    sqlite3_result_error(context, "No such tokenizer module", -1);
-    goto exprtest_out;
+  zTokenizer = (const char*)sqlite3_value_text(argv[0]);
+  rc = sqlite3Fts3InitTokenizer(pHash, zTokenizer, &pTokenizer, &zErr);
+  if( rc!=SQLITE_OK ){
+    if( rc==SQLITE_NOMEM ){
+      sqlite3_result_error_nomem(context);
+    }else{
+      sqlite3_result_error(context, zErr, -1);
+    }
+    sqlite3_free(zErr);
+    return;
   }
-
-  rc = pModule->xCreate(0, 0, &pTokenizer);
-  assert( rc==SQLITE_NOMEM || rc==SQLITE_OK );
-  if( rc==SQLITE_NOMEM ){
-    sqlite3_result_error_nomem(context);
-    goto exprtest_out;
-  }
-  pTokenizer->pModule = pModule;
 
   zExpr = (const char *)sqlite3_value_text(argv[1]);
   nExpr = sqlite3_value_bytes(argv[1]);
   nCol = argc-2;
-  azCol = (char **)sqlite3_malloc(nCol*sizeof(char *));
+  azCol = (char **)sqlite3_malloc64(nCol*sizeof(char *));
   if( !azCol ){
     sqlite3_result_error_nomem(context);
     goto exprtest_out;
@@ -1231,7 +1224,7 @@ static void fts3ExprTest(
     azCol[ii] = (char *)sqlite3_value_text(argv[ii+2]);
   }
 
-  if( sqlite3_user_data(context) ){
+  if( bRebalance ){
     char *zDummy = 0;
     rc = sqlite3Fts3ExprParse(
         pTokenizer, 0, azCol, 0, nCol, nCol, zExpr, nExpr, &pExpr, &zDummy
@@ -1257,23 +1250,38 @@ static void fts3ExprTest(
   sqlite3Fts3ExprFree(pExpr);
 
 exprtest_out:
-  if( pModule && pTokenizer ){
-    rc = pModule->xDestroy(pTokenizer);
+  if( pTokenizer ){
+    rc = pTokenizer->pModule->xDestroy(pTokenizer);
   }
   sqlite3_free(azCol);
+}
+
+static void fts3ExprTest(
+  sqlite3_context *context,
+  int argc,
+  sqlite3_value **argv
+){
+  fts3ExprTestCommon(0, context, argc, argv);
+}
+static void fts3ExprTestRebalance(
+  sqlite3_context *context,
+  int argc,
+  sqlite3_value **argv
+){
+  fts3ExprTestCommon(1, context, argc, argv);
 }
 
 /*
 ** Register the query expression parser test function fts3_exprtest() 
 ** with database connection db. 
 */
-int sqlite3Fts3ExprInitTestInterface(sqlite3* db){
+int sqlite3Fts3ExprInitTestInterface(sqlite3 *db, Fts3Hash *pHash){
   int rc = sqlite3_create_function(
-      db, "fts3_exprtest", -1, SQLITE_UTF8, 0, fts3ExprTest, 0, 0
+      db, "fts3_exprtest", -1, SQLITE_UTF8, (void*)pHash, fts3ExprTest, 0, 0
   );
   if( rc==SQLITE_OK ){
     rc = sqlite3_create_function(db, "fts3_exprtest_rebalance", 
-        -1, SQLITE_UTF8, (void *)1, fts3ExprTest, 0, 0
+        -1, SQLITE_UTF8, (void*)pHash, fts3ExprTestRebalance, 0, 0
     );
   }
   return rc;

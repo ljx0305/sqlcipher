@@ -409,7 +409,7 @@ do_test fts3expr-5.1 {
 } {1 {Usage: fts3_exprtest(tokenizer, expr, col1, ...}}
 do_test fts3expr-5.2 {
   catchsql { SELECT fts3_exprtest('doesnotexist', 'a b', 'c') }
-} {1 {No such tokenizer module}}
+} {1 {unknown tokenizer: doesnotexist}}
 do_test fts3expr-5.3 {
   catchsql { SELECT fts3_exprtest('simple', 'a b OR', 'c') }
 } {1 {Error parsing expression}}
@@ -513,5 +513,9 @@ set sqlite_fts3_enable_parentheses 0
 do_test fts3expr-9.1 {
   test_fts3expr "f (e NEAR/2 a)"
 } {AND {PHRASE 3 0 f} {NEAR/2 {PHRASE 3 0 e} {PHRASE 3 0 a}}}
+
+do_test fts3expr-10.1 { test_fts3expr "abc *" } {PHRASE 3 0 abc}
+do_test fts3expr-10.2 { test_fts3expr "*" } {}
+do_test fts3expr-10.3 { test_fts3expr "abc*" } {PHRASE 3 0 abc+}
 
 finish_test
